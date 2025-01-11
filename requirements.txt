@@ -1,0 +1,15 @@
+flask==3.0.0
+flask-cors==4.0.0
+python-dotenv==1.0.0
+werkzeug==3.0.1
+PyMuPDF==1.23.8
+beautifulsoup4==4.12.2
+backoff==2.2.1
+duckduckgo-search==4.1.1
+langchain==0.1.0
+langchain-community==0.0.16
+langchain-groq==0.0.1
+chromadb==0.4.22
+sentence-transformers==2.2.2
+python-multipart==0.0.6
+requests==2.31.0
