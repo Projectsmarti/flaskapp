@@ -1,1 +1,670 @@
+!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>Enhanced Document Chat Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid #3498db;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .chat-message {
+            word-wrap: break-word;
+            max-width: 90%;
+            margin: 8px;
+            padding: 12px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: auto;
+        }
+        .assistant-message {
+            background-color: #f5f5f5;
+            margin-right: auto;
+        }
+        .pdf-container {
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+        }
+        .pdf-controls {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 8px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .control-btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 36px;
+            cursor: pointer;
+        }
+        .control-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .control-btn:not(:disabled):hover {
+            transform: translateY(-1px);
+            opacity: 0.9;
+        }
+        #pdfViewer {
+            overflow-y: auto;
+            background-color: #f5f5f5;
+        }
+        .chat-container {
+            height: calc(50vh - 100px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e0 #f7fafc;
+            padding: 1rem;
+        }
+        .chat-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .chat-container::-webkit-scrollbar-track {
+            background: #f7fafc;
+        }
+        .chat-container::-webkit-scrollbar-thumb {
+            background-color: #cbd5e0;
+            border-radius: 4px;
+        }
+        canvas {
+            margin: 0 auto;
+            display: block;
+        }
+        .error-message {
+            color: #ef4444;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+        .source-citation {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background-color: #f8fafc;
+            border-radius: 0.375rem;
+            border: 1px solid #e2e8f0;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto p-4">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Document Chat Assistant</h1>
+            <p class="text-gray-600">Upload a document to start chatting and searching</p>
+        </header>
 
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Left Column: Document Viewer -->
+            <div class="bg-white rounded-lg shadow-lg p-4">
+                <div class="mb-4">
+                    <div class="flex items-center justify-between">
+                        <h2 class="text-xl font-bold text-gray-800">Document Upload</h2>
+                        <div class="spinner" id="uploadSpinner"></div>
+                    </div>
+                    <div class="mt-2">
+                        <input type="file" id="fileUpload" accept=".pdf,.docx"
+                               class="w-full p-2 border rounded text-gray-700">
+                        <p id="uploadStatus" class="text-sm text-gray-500 mt-1"></p>
+                    </div>
+                </div>
+
+                <div class="pdf-container h-[600px]">
+                    <div class="pdf-controls">
+                        <button id="prevPage" onclick="previousPage()" class="control-btn bg-blue-500 text-white" disabled>&larr;</button>
+                        <span id="pageInfo" class="mx-2">Page 1 of 1</span>
+                        <button id="nextPage" onclick="nextPage()" class="control-btn bg-blue-500 text-white" disabled>&rarr;</button>
+                        <button onclick="zoomIn()" class="control-btn bg-green-500 text-white">+</button>
+                        <button onclick="zoomOut()" class="control-btn bg-green-500 text-white">-</button>
+                    </div>
+                    <canvas id="pdfCanvas"></canvas>
+                </div>
+            </div>
+
+            <!-- Right Column: Chat Interface -->
+            <div class="space-y-6">
+                <!-- Document Chat -->
+                <div class="bg-white rounded-lg shadow-lg p-4">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-xl font-bold text-gray-800">Document Chat</h2>
+                        <div class="spinner" id="docChatSpinner"></div>
+                    </div>
+                    <div id="documentChat" class="chat-container mb-4"></div>
+                    <div class="flex space-x-2">
+                        <textarea id="documentQuestion"
+                                  class="flex-1 p-2 border rounded resize-none"
+                                  placeholder="Ask about the document..."
+                                  rows="2"></textarea>
+                        <button onclick="askDocumentQuestion()"
+                                class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors">
+                            Ask
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Web Search -->
+                <div class="bg-white rounded-lg shadow-lg p-4">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-xl font-bold text-gray-800">Web Search</h2>
+                        <div class="spinner" id="webSearchSpinner"></div>
+                    </div>
+                    <div id="webSearchChat" class="chat-container mb-4"></div>
+                    <div class="flex space-x-2">
+                        <input type="text" id="webSearchQuery"
+                               class="flex-1 p-2 border rounded text-gray-700"
+                               placeholder="Search the web...">
+                        <button onclick="performWebSearch()"
+                                class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 transition-colors">
+                            Search
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize PDF.js with error handling
+        if (typeof pdfjsLib === 'undefined') {
+            console.error('PDF.js library not loaded');
+            alert('Error: PDF.js library not loaded. Please check your internet connection and refresh the page.');
+        }
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        // Global state management
+        const state = {
+            currentPdf: null,
+            currentPage: 1,
+            currentScale: 1.5,
+            currentHighlights: [],
+            maxFileSize: 16 * 1024 * 1024, // 16MB
+            allowedFileTypes: ['.pdf', '.docx', '.doc'],
+            highlightColors: {
+                primary: 'rgba(255, 255, 0, 0.3)',
+                secondary: 'rgba(0, 255, 255, 0.2)',
+            }
+        };
+
+        // UI Controls
+        function updateUIControls() {
+            const prevBtn = document.getElementById('prevPage');
+            const nextBtn = document.getElementById('nextPage');
+
+            if (state.currentPdf) {
+                prevBtn.disabled = state.currentPage <= 1;
+                nextBtn.disabled = state.currentPage >= state.currentPdf.numPages;
+            } else {
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+            }
+        }
+
+        // Error handling utility
+        function handleError(error, context) {
+            console.error(`Error in ${context}:`, error);
+            const errorMessage = error.message || 'An unexpected error occurred';
+            setUploadStatus(`Error: ${errorMessage}`, true);
+            return new Error(`${context}: ${errorMessage}`);
+        }
+
+        // UI utilities
+        function showSpinner(id) {
+            const spinner = document.getElementById(id);
+            if (spinner) spinner.style.display = 'block';
+        }
+
+        function hideSpinner(id) {
+            const spinner = document.getElementById(id);
+            if (spinner) spinner.style.display = 'none';
+        }
+
+        function setUploadStatus(message, isError = false) {
+            const status = document.getElementById('uploadStatus');
+            if (status) {
+                status.textContent = message;
+                status.className = `text-sm mt-1 ${isError ? 'text-red-500' : 'text-green-500'}`;
+            }
+        }
+
+        // PDF handling
+        async function displayPDF(url, pageNumber = 1) {
+            try {
+                const loadingTask = pdfjsLib.getDocument(url);
+                setUploadStatus('Loading PDF...');
+
+                const pdf = await loadingTask.promise;
+                state.currentPdf = pdf;
+                await renderPage(pageNumber);
+                setUploadStatus('PDF loaded successfully');
+                updateUIControls();
+            } catch (error) {
+                throw handleError(error, 'PDF Display');
+            }
+        }
+
+        async function renderPage(pageNumber) {
+            if (!state.currentPdf) return;
+
+            try {
+                const page = await state.currentPdf.getPage(pageNumber);
+                const canvas = document.getElementById('pdfCanvas');
+                const context = canvas.getContext('2d');
+
+                const viewport = page.getViewport({ scale: state.currentScale });
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                // Clear canvas
+                context.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Render page
+                await page.render({
+                    canvasContext: context,
+                    viewport: viewport,
+                }).promise;
+
+                // Render highlights
+                renderHighlights(context, pageNumber, viewport);
+
+                state.currentPage = pageNumber;
+                updatePageInfo();
+                updateUIControls();
+            } catch (error) {
+                throw handleError(error, 'Page Rendering');
+            }
+        }
+
+        function renderHighlights(context, pageNumber, viewport) {
+            state.currentHighlights
+                .filter(h => h.page === pageNumber)
+                .forEach(highlight => {
+                    highlight.coords.forEach(rect => {
+                        const scaled = {
+                            x: rect.x * state.currentScale,
+                            y: rect.y * state.currentScale,
+                            width: rect.width * state.currentScale,
+                            height: rect.height * state.currentScale,
+                        };
+
+                        context.fillStyle = highlight.color;
+                        context.fillRect(scaled.x, scaled.y, scaled.width, scaled.height);
+                    });
+                });
+        }
+
+        function updatePageInfo() {
+            const pageInfo = document.getElementById('pageInfo');
+            if (state.currentPdf) {
+                pageInfo.textContent = `Page ${state.currentPage} of ${state.currentPdf.numPages}`;
+            }
+        }
+
+        // Navigation functions
+        async function previousPage() {
+            if (state.currentPage > 1) {
+                await renderPage(state.currentPage - 1);
+            }
+        }
+
+        async function nextPage() {
+            if (state.currentPdf && state.currentPage < state.currentPdf.numPages) {
+                await renderPage(state.currentPage + 1);
+            }
+        }
+
+        function zoomIn() {
+            state.currentScale *= 1.2;
+            renderPage(state.currentPage);
+        }
+
+        function zoomOut() {
+            state.currentScale = Math.max(0.5, state.currentScale * 0.8);
+            renderPage(state.currentPage);
+        }
+
+        // File upload handling
+        async function uploadFile(file) {
+            if (!file) {
+                throw new Error('No file selected');
+            }
+
+            showSpinner('uploadSpinner');
+            setUploadStatus('Uploading document...');
+
+            try {
+                // Validate file size
+                if (file.size > state.maxFileSize) {
+                    throw new Error('File size exceeds 16MB limit');
+                }
+
+                // Validate file type
+                const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+                if (!state.allowedFileTypes.includes(fileExtension)) {
+                    throw new Error('Invalid file type. Only PDF and DOCX files are allowed.');
+                }
+
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Upload failed');
+                }
+
+                const result = await response.json();
+                setUploadStatus('Document uploaded successfully');
+
+                if (result.pdf_base64) {
+                    const pdfData = `data:application/pdf;base64,${result.pdf_base64}`;
+                    await displayPDF(pdfData);
+                }
+
+                return result;
+            } catch (error) {
+                throw handleError(error, 'File Upload');
+            } finally {
+                hideSpinner('uploadSpinner');
+            }
+        }
+
+        // Highlighting functionality
+        async function highlightText(pageNumber, coordinates) {
+            if (!state.currentPdf) return;
+
+            try {
+                const page = await state.currentPdf.getPage(pageNumber);
+                const canvas = document.getElementById('pdfCanvas');
+                const context = canvas.getContext('2d');
+
+                // Store highlight data
+                state.currentHighlights.push({
+                    page: pageNumber,
+                    coords: coordinates,
+                    color: state.highlightColors.primary,
+                });
+
+                // Apply highlight
+                const viewport = page.getViewport({ scale: state.currentScale });
+                coordinates.forEach(rect => {
+                    const scaled = {
+                        x: rect.x * state.currentScale,
+                        y: rect.y * state.currentScale,
+                        width: rect.width * state.currentScale,
+                        height: rect.height * state.currentScale,
+                    };
+
+                    context.fillStyle = state.highlightColors.primary;
+                    context.fillRect(scaled.x, scaled.y, scaled.width, scaled.height);
+                });
+            } catch (error) {
+                handleError(error, 'Text Highlighting');
+            }
+        }
+
+        // Source citation handling
+        function createSourceLink(pageNumber, sourceText) {
+            return `
+                <div class="source-citation">
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-medium text-gray-700">Source: Page ${pageNumber}</span>
+                        <button
+                            onclick="navigateToSource(${pageNumber})"
+                            class="text-blue-500 hover:text-blue-700 text-sm font-medium"
+                        >
+                            Go to source
+                        </button>
+                    </div>
+                    <div class="mt-2 text-sm text-gray-600">${sourceText}</div>
+                </div>
+            `;
+        }
+
+        async function navigateToSource(pageNumber) {
+            if (!state.currentPdf || pageNumber < 1 || pageNumber > state.currentPdf.numPages) return;
+
+            await renderPage(pageNumber);
+
+            // Scroll the PDF viewer into view
+            const pdfContainer = document.querySelector('.pdf-container');
+            pdfContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // Chat handling
+        async function askDocumentQuestion() {
+            const questionInput = document.getElementById('documentQuestion');
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            const chatContainer = document.getElementById('documentChat');
+
+            // Add user message
+            chatContainer.innerHTML += `
+                <div class="chat-message user-message">${escapeHtml(question)}</div>
+            `;
+            questionInput.value = '';
+
+            showSpinner('docChatSpinner');
+
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question }),
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to get answer');
+                }
+
+                // Clear previous highlights
+                state.currentHighlights = [];
+
+                // Create answer HTML with source linking
+                let answerHtml = `
+                    <div class="chat-message assistant-message">
+                        ${escapeHtml(result.answer)}
+                `;
+
+                // Add source citations if available
+                if (result.sources?.length > 0) {
+                    result.sources.forEach(source => {
+                        answerHtml += createSourceLink(source.page, escapeHtml(source.text));
+
+                        // Add highlights if coordinates are provided
+                        if (source.coordinates) {
+                            highlightText(source.page, source.coordinates);
+                        }
+                    });
+                }
+
+                answerHtml += '</div>';
+                chatContainer.innerHTML += answerHtml;
+
+                // Navigate to first source if available
+                if (result.sources?.length > 0) {
+                    await navigateToSource(result.sources[0].page);
+                }
+            } catch (error) {
+                chatContainer.innerHTML += `
+                    <div class="chat-message assistant-message text-red-500">
+                        Error: ${escapeHtml(error.message)}
+                    </div>
+                `;
+            } finally {
+                hideSpinner('docChatSpinner');
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // Web search handling
+        async function performWebSearch() {
+            const searchInput = document.getElementById('webSearchQuery');
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            const chatContainer = document.getElementById('webSearchChat');
+
+            // Add user query to chat
+            chatContainer.innerHTML += `
+                <div class="chat-message user-message">${escapeHtml(query)}</div>
+            `;
+            searchInput.value = '';
+
+            showSpinner('webSearchSpinner');
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const searchResults = data.results || [];
+
+                // Create HTML for search results
+                let resultsHtml = '<div class="chat-message assistant-message">';
+
+                if (!Array.isArray(searchResults) || searchResults.length === 0) {
+                    resultsHtml += `
+                        <div class="p-4 text-gray-700">
+                            <p>No results found for "${escapeHtml(query)}"</p>
+                            <p class="mt-2 text-sm">Try:</p>
+                            <ul class="list-disc ml-6 mt-1 text-sm">
+                                <li>Using different keywords</li>
+                                <li>Being more specific in your search</li>
+                                <li>Checking your spelling</li>
+                            </ul>
+                        </div>`;
+                } else {
+                    resultsHtml += '<div class="space-y-4">';
+                    searchResults.forEach(item => {
+                        if (item?.url && item?.title) {
+                            resultsHtml += `
+                                <div class="search-result border-b pb-3">
+                                    <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer"
+                                       class="text-blue-600 hover:text-blue-800 font-medium">
+                                        ${escapeHtml(item.title)}
+                                    </a>
+                                    <p class="text-sm text-gray-500 mt-1">${escapeHtml(item.url)}</p>
+                                    ${item.summary ? `<p class="text-sm text-gray-600 mt-1">${escapeHtml(item.summary)}</p>` : ''}
+                                </div>
+                            `;
+                        }
+                    });
+                    resultsHtml += '</div>';
+                }
+
+                resultsHtml += '</div>';
+                chatContainer.innerHTML += resultsHtml;
+
+            } catch (error) {
+                chatContainer.innerHTML += `
+                    <div class="chat-message assistant-message">
+                        <div class="p-4 text-red-500">
+                            <p>Sorry, there was an error performing the search.</p>
+                            <p class="text-sm mt-2">Error: ${escapeHtml(error.message)}</p>
+                        </div>
+                    </div>
+                `;
+            } finally {
+                hideSpinner('webSearchSpinner');
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // Security utility
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // Event listeners
+        document.getElementById('fileUpload').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                setUploadStatus('No file selected', true);
+                return;
+            }
+
+            try {
+                await uploadFile(file);
+                event.target.value = '';
+            } catch (error) {
+                console.error('File upload failed:', error);
+            }
+        });
+
+        document.getElementById('documentQuestion').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                askDocumentQuestion();
+            }
+        });
+
+        document.getElementById('webSearchQuery').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                performWebSearch();
+            }
+        });
+
+        // Initialize the application
+        function initializeApp() {
+            updateUIControls();
+            setUploadStatus('Ready to upload document');
+        }
+
+        // Call initialization when the DOM is loaded
+        document.addEventListener('DOMContentLoaded', initializeApp);
+    </script>
+</body>
+</html>
